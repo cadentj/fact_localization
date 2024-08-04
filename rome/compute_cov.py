@@ -4,7 +4,7 @@ from datasets import load_dataset
 from nnsight import LanguageModel
 from transformer_lens.utils import tokenize_and_concatenate
 
-from baukit.stats import SecondMoment, tally
+from baukit.runningstats import SecondMoment, tally
 
 def flatten(x):
     return x.view(-1, x.size(-1))
@@ -30,7 +30,7 @@ def compute_cov(model, dataset, layer: int, filename: str = "mom2.npz"):
 
         for batch in tqdm(loader, total=n):
         
-            with model.trace(batch['input_ids'], scan=False, validate=False):
+            with model.trace(batch['input_ids']):
 
                 acts = flatten(model.transformer.h[layer].mlp.act.output)
 

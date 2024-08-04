@@ -1,103 +1,85 @@
-from repr_tools import get_reprs_at_word_tokens, get_reprs_at_idxs
+# %%
+import os
 
+import torch
+import numpy as np
+from baukit.runningstats import CombinedStat, SecondMoment
+
+from .utils import get_words_idxs_in_templates
+
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+INV_MOM2_CACHE = {}
 
 def get_inv_cov(
-    model: AutoModelForCausalLM,
-    tok: AutoTokenizer,
-    layer_name: str,
-    mom2_dataset: str,
-    mom2_n_samples: str,
-    mom2_dtype: str,
-) -> torch.Tensor:
+    model,
+    layer: int
+):
     """
     Retrieves covariance statistics, then computes the algebraic inverse.
     Caches result for future use.
     """
 
-    global inv_mom2_cache
+    global INV_MOM2_CACHE
 
     model_name = model.config._name_or_path.replace("/", "_")
-    key = (model_name, layer_name)
+    key = (model_name, layer)
 
-    if key not in inv_mom2_cache:
+    if key not in INV_MOM2_CACHE:
+
         print(
-            f"Retrieving inverse covariance statistics for {model_name} @ {layer_name}. "
+            f"Retrieving inverse covariance statistics for {model_name} @ {layer}.\n"
             f"The result will be cached to avoid repetitive computation."
         )
-        stat = layer_stats(
-            model,
-            tok,
-            layer_name,
-            STATS_DIR,
-            mom2_dataset,
-            to_collect=["mom2"],
-            sample_size=mom2_n_samples,
-            precision=mom2_dtype,
+
+        stat = CombinedStat(mom2 = SecondMoment())
+
+        stat.load_state_dict(
+            np.load(
+                f"{CURRENT_DIR}/stats/{model_name}_layer{layer}.npz",
+            )
         )
-        inv_mom2_cache[key] = torch.inverse(
+        
+        INV_MOM2_CACHE[key] = torch.inverse(
             stat.mom2.moment().to("cuda")
         ).float()  # Cast back to float32
 
-    return inv_mom2_cache[key]
-
+    return INV_MOM2_CACHE[key]
 
 def compute_u(
     model,
     tok,
+    req,
     context_templates,
-) -> torch.Tensor:
-    """
-    Computes the right vector used in constructing the rank-1 update matrix.
-    """
-
-    print("Computing left vector (u)...")
-
-    # Compute projection token
-    word_repr_args = dict(
-        model=model,
-        tok=tok,
-        layer=layer,
-        module_template=hparams.rewrite_module_tmp,
-        track="in",
+):
+    
+    # Get the last subject token index for each template
+    prompts, indices = get_words_idxs_in_templates(
+        tok=tok, 
+        context_templates=[
+            template.format(req.prompt) 
+            for template in context_templates
+        ],
+        words = [req.subject] * len(context_templates),
     )
-    if "subject_" in hparams.fact_token and hparams.fact_token.index("subject_") == 0:
-        word = request["subject"]
-        print(f"Selected u projection object {word}")
-        cur_repr = get_reprs_at_word_tokens(
-            context_templates=[
-                templ.format(request["prompt"]) for templ in context_templates
-            ],
-            words=[word for _ in range(len(context_templates))],
-            subtoken=hparams.fact_token[len("subject_") :],
-            **word_repr_args,
-        ).mean(0)
-    elif hparams.fact_token == "last":
-        # Heuristic to choose last word. Not a huge deal if there's a minor
-        # edge case (e.g. multi-token word) because the function below will
-        # take the last token.
-        cur_repr = get_reprs_at_idxs(
-            contexts=[
-                templ.format(request["prompt"].format(request["subject"]))
-                for templ in context_templates
-            ],
-            idxs=[[-1] for _ in range(len(context_templates))],
-            **word_repr_args,
-        ).mean(0)
-        print("Selected u projection token with last token")
-    else:
-        raise ValueError(f"fact_token={hparams.fact_token} not recognized")
 
-    # Apply inverse second moment adjustment
-    u = cur_repr
-    if hparams.mom2_adjustment:
-        u = get_inv_cov(
-            model,
-            tok,
-            hparams.rewrite_module_tmp.format(layer),
-            hparams.mom2_dataset,
-            hparams.mom2_n_samples,
-            hparams.mom2_dtype,
-        ) @ u.unsqueeze(1)
-        u = u.squeeze()
+    # Compute average k
+    with model.trace(prompts):
+
+        k = model.transformer.h[req.layer].mlp.c_proj.input[0][0]
+
+        u = [
+            k[i, indices[i],:] for i in range(len(prompts))
+        ]
+        u = torch.stack(u)
+        u = u.mean(dim=0)
+        u.save()
+
+    # Compute u
+    u = get_inv_cov(
+        model,
+        10,
+    ) @ u.value.unsqueeze(1)
+
+    u = u.squeeze()
 
     return u / u.norm()

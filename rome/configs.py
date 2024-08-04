@@ -12,8 +12,15 @@ class RomeRequest(NamedTuple):
 
     target_new: str = "Rome"
 
-    target_old: str = "Seattle"
+    kl_prompt: str = "{} is a"
 
 @dataclass
 class RomeConfig(Serializable):
-    layer: int
+
+    v_lr: float = 5e-1
+
+    v_weight_decay: float = 0.5
+    
+    kl_factor: float = 0.0625
+
+    clamp_norm_factor: int = 4

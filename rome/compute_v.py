@@ -1,27 +1,28 @@
-# %%
+from typing import List
 
+import torch
+import numpy as np
+from torchtyping import TensorType
 from nnsight import LanguageModel
 from transformers import AutoTokenizer
-import torch
-from .utils import get_words_idxs_in_templates
 
-
-KL_PROMPT = "{} is a"
+from .utils import format_template
+from .configs import RomeRequest, RomeConfig
 
 
 def compute_v(
-    model: LanguageModel, 
-    tok: AutoTokenizer, 
-    req,
-    left_vector,
-    context_templates
+    model: LanguageModel,
+    tok: AutoTokenizer,
+    req: RomeRequest,
+    cfg: RomeConfig,
+    left_vector: TensorType["d_fanout"],
+    context_templates: List[str],
 ):
-    input_tok, target_ids, kl_prompts, lookup_idxs = \
+    input_tok, target_ids, lookup_idxs = \
         _get_prompts(req, context_templates, tok)
-    
-    rewriting_targets = _get_rewriting_targets(
-        context_templates, input_tok, target_ids
-    )
+
+    rewriting_targets = \
+        _get_rewriting_targets(context_templates, input_tok, target_ids)
 
     # Set up an optimization over a latent vector that, when output at the
     # rewrite layer, i.e. hypothesized fact lookup location, will induce the
@@ -30,35 +31,40 @@ def compute_v(
     target_init, kl_distr_init = None, None
 
     # Optimizer
-    opt = torch.optim.Adam([delta], lr=0.5)
+    opt = torch.optim.Adam([delta], lr=cfg.v_lr)
 
     model._model.eval()
 
     for _ in range(25):
-        print("step")
-
         opt.zero_grad()
 
-        with model.trace(input_tok['input_ids']):
-            
+        with model.trace(input_tok["input_ids"]):
             mlp = model.transformer.h[req.layer].mlp
 
             if target_init is None:
-                target_init = mlp.output[0, lookup_idxs[0]].detach().save()
+                target_init = mlp.output[0, lookup_idxs[0]].detach().clone().save()
 
             for i, idx in enumerate(lookup_idxs):
                 mlp.output[i, idx, :] += delta
 
             logits = model.output.logits.save()
 
-        kl_loss = _kl_loss(logits, kl_prompts, lookup_idxs, kl_distr_init)
-        nll_loss = _nll_loss(logits, rewriting_targets, target_ids)
+        kl_loss = _kl_loss(
+            logits, lookup_idxs, kl_distr_init, kl_factor=cfg.kl_factor
+        )
+        nll_loss, nll_loss_each = _nll_loss(logits, rewriting_targets, target_ids)
 
-        weight_decay = 0.5 * (torch.norm(delta) / torch.norm(target_init) ** 2)
+        weight_decay = cfg.v_weight_decay * (
+            torch.norm(delta) / torch.norm(target_init) ** 2
+        )
 
         loss = nll_loss + kl_loss + weight_decay
 
-        print(f"Loss: {loss.item()}")
+        print(
+            f"loss {np.round(loss.item(), 3)} = {np.round(nll_loss.item(), 3)} + {np.round(kl_loss.item(), 3)} + {np.round(weight_decay.item(), 3)} "
+            f"avg prob of [{req.target_new}] "
+            f"{torch.exp(-nll_loss_each).mean().item()}"
+        )
 
         if loss < 5e-2:
             print("Loss is small, breaking")
@@ -69,37 +75,39 @@ def compute_v(
         opt.step()
 
         # Project within L2 ball
-        max_norm = 4 * target_init.norm()
+        max_norm = cfg.clamp_norm_factor * target_init.norm()
         if delta.norm() > max_norm:
             with torch.no_grad():
                 delta[...] = delta * max_norm / delta.norm()
 
     target = target_init + delta
 
+    cur_input, cur_output = _get_cur_io(model, req, tok)
 
-    prompt, idx = get_words_idxs_in_templates(
-        tok,
-        [req.prompt],
-        [req.subject]
+    right_vector = (target - cur_output) / torch.dot(cur_input, left_vector)
+
+    # Print stats
+    print(f"Delta norm: {(target - cur_output).norm().item()}")
+    print(
+        f"Change in target norm: {target_init.norm().item()} to {target.norm().item()} => {(target.norm() - target_init.norm()).item()}"
     )
-
-    with model.trace(prompt):
-
-        mlp = model.transformer.h[req.layer].mlp.c_proj
-
-        cur_input = mlp.input[0][0][0, idx].squeeze().save()
-        cur_output = mlp.output[0, idx].squeeze().save()
-
-    right_vector = (target - cur_output.value) / torch.dot(cur_input.value, left_vector)
+    print(f"Division Factor: {torch.dot(cur_input, left_vector).item()}")
+    print(f"Right vector norm: {right_vector.norm()}")
 
     return right_vector
 
 
-def _kl_loss(logits, kl_prompts, lookup_idxs, kl_distr_init, scaling: float = 0.0625):
+def _kl_loss(
+    logits: TensorType["batch", "seq", "vocab"],
+    lookup_idxs: List[int], 
+    kl_distr_init, 
+    kl_factor: float
+) -> TensorType["kl_loss"]:
+    n_kl_prompts = 1
     kl_logits = torch.stack(
         [
-            logits[i - len(kl_prompts), idx, :]
-            for i, idx in enumerate(lookup_idxs[-len(kl_prompts) :])
+            logits[i - n_kl_prompts, idx, :]
+            for i, idx in enumerate(lookup_idxs[-n_kl_prompts :])
         ],
         dim=0,
     )
@@ -109,14 +117,18 @@ def _kl_loss(logits, kl_prompts, lookup_idxs, kl_distr_init, scaling: float = 0.
     if kl_distr_init is None:
         kl_distr_init = kl_log_probs.detach().clone()
 
-    kl_loss = scaling * torch.nn.functional.kl_div(
+    kl_loss = kl_factor * torch.nn.functional.kl_div(
         kl_distr_init, kl_log_probs, log_target=True, reduction="batchmean"
     )
 
     return kl_loss
 
 
-def _nll_loss(logits, rewriting_targets, target_ids):
+def _nll_loss(
+    logits: TensorType["batch", "seq", "vocab"],
+    rewriting_targets: TensorType["batch", "seq"],
+    target_ids: TensorType["seq"]
+) -> TensorType["nll_loss"]:
     # Compute loss on rewriting targets
     log_probs = torch.log_softmax(logits, dim=2)
 
@@ -131,46 +143,68 @@ def _nll_loss(logits, rewriting_targets, target_ids):
     nll_loss_each = -(loss * mask).sum(1) / target_ids.size(0)
     nll_loss = nll_loss_each.mean()
 
-    return nll_loss
+    return nll_loss, nll_loss_each
 
 
 def _get_prompts(req, context_templates, tok):
+    """
+    Create the batch of kl_prompts and rewriting prompts.
+    Also create the lookup indices for the target token.
+    """
+
     # Tokenize target into list of int token IDs
-    target_ids = tok(req.target_new, return_tensors="pt")["input_ids"][0]
+    target_ids = tok.encode(req.target_new, return_tensors="pt")[0]
 
     # Compile list of rewriting and KL x/y pairs
     rewriting_prompts = [
         context.format(req.prompt) + tok.decode(target_ids[:-1])
         for context in context_templates
     ]
-    kl_prompts = [KL_PROMPT]
+    kl_prompts = [req.kl_prompt]
 
-    # Compute indices of the tokens where the fact is looked up
+    # Compile prompts and lookup indices
     n = len(context_templates) + len(kl_prompts)
-    all_prompts, lookup_idxs = get_words_idxs_in_templates(
-        tok = tok,
-        context_templates = rewriting_prompts + kl_prompts,
-        words = [req.subject] * n,
+    all_prompts, lookup_idxs = format_template(
+        tok=tok,
+        context_templates=rewriting_prompts + kl_prompts,
+        words=[req.subject] * n,
     )
 
-    input_tok = tok(
-        all_prompts,
-        return_tensors="pt",
-        padding=True,
-    ).to("cuda")
+    input_tok = tok(all_prompts, return_tensors="pt", padding=True)
 
-    return input_tok, target_ids, kl_prompts, lookup_idxs
+    return input_tok, target_ids, lookup_idxs
 
 
-def _get_rewriting_targets(rewriting_prompts, input_tok, target_ids):
+def _get_rewriting_targets(
+    rewriting_prompts: List[str], 
+    input_tok: TensorType["batch", "seq"],
+    target_ids: TensorType["seq"]
+):
+    """
+    Create a target id mask over the batch's attention mask.
+    """
+    # Create empty mask tensor
+    shape = (len(rewriting_prompts), *input_tok["input_ids"].shape[1:])
+    rewriting_targets = torch.full(shape, -100, device="cuda")
 
-    # Compute rewriting targets
-    rewriting_targets = torch.tensor(-100, device="cuda").repeat(
-        len(rewriting_prompts), *input_tok["input_ids"].shape[1:]
-    )
-
+    # Fill in rewriting target tokens
     for i in range(len(rewriting_prompts)):
-        ex_len = input_tok["attention_mask"][i].sum()
-        rewriting_targets[i, ex_len - len(target_ids) : ex_len] = target_ids
+        prompt_len = input_tok["attention_mask"][i].sum()
+        rewriting_targets[i, prompt_len - len(target_ids) : prompt_len] = target_ids
 
     return rewriting_targets
+
+
+def _get_cur_io(model, req, tok):
+    """
+    Get the input/output acts at the requested layer's MLP projection.
+    """
+    prompt, idx = format_template(tok, [req.prompt], [req.subject])
+
+    with model.trace(prompt):
+        mlp = model.transformer.h[req.layer].mlp.c_proj
+
+        cur_input = mlp.input[0][0][0, idx].squeeze().save()
+        cur_output = mlp.output[0, idx].squeeze().save()
+
+    return cur_input.value, cur_output.value

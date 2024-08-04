@@ -27,42 +27,7 @@ def sample_k(
     return [sample + ". {}" for sample in samples]
 
 
-def _get_split_lengths(tok, prefixes, words, suffixes):
-    # Pre-process tokens to account for different 
-    # tokenization strategies
-    for i, prefix in enumerate(prefixes):
-        if len(prefix) > 0:
-            assert prefix[-1] == " "
-            prefix = prefix[:-1]
-
-            prefixes[i] = prefix
-            words[i] = f" {words[i].strip()}"
-
-    # Tokenize to determine lengths
-    assert len(prefixes) == len(words) == len(suffixes)
-    n = len(prefixes)
-    batch_tok = tok([*prefixes, *words, *suffixes])
-    prefixes_tok, words_tok, suffixes_tok = [
-        batch_tok[i : i + n] for i in range(0, n * 3, n)
-    ]
-    prefixes_len, words_len, suffixes_len = [
-        [len(el) for el in tok_list]
-        for tok_list in [prefixes_tok, words_tok, suffixes_tok]
-    ]
-
-    return prefixes_len, words_len, suffixes_len
-
-
-def _split_templates(context_templates):
-    # Compute prefixes and suffixes of the tokenized context
-    fill_idxs = [tmp.index("{}") for tmp in context_templates]
-    prefixes = [tmp[: fill_idxs[i]] for i, tmp in enumerate(context_templates)]
-    suffixes = [tmp[fill_idxs[i] + 2 :] for i, tmp in enumerate(context_templates)]
-
-    return prefixes, suffixes
-
-
-def get_words_idxs_in_templates(
+def format_template(
     tok: AutoTokenizer, 
     context_templates: List[str], 
     words: str, 
@@ -113,3 +78,38 @@ def get_words_idxs_in_templates(
         ]
 
         return prompts, word_idxs
+    
+
+def _get_split_lengths(tok, prefixes, words, suffixes):
+    # Pre-process tokens to account for different 
+    # tokenization strategies
+    for i, prefix in enumerate(prefixes):
+        if len(prefix) > 0:
+            assert prefix[-1] == " "
+            prefix = prefix[:-1]
+
+            prefixes[i] = prefix
+            words[i] = f" {words[i].strip()}"
+
+    # Tokenize to determine lengths
+    assert len(prefixes) == len(words) == len(suffixes)
+    n = len(prefixes)
+    batch_tok = tok([*prefixes, *words, *suffixes])
+    prefixes_tok, words_tok, suffixes_tok = [
+        batch_tok[i : i + n] for i in range(0, n * 3, n)
+    ]
+    prefixes_len, words_len, suffixes_len = [
+        [len(el) for el in tok_list]
+        for tok_list in [prefixes_tok, words_tok, suffixes_tok]
+    ]
+
+    return prefixes_len, words_len, suffixes_len
+
+
+def _split_templates(context_templates):
+    # Compute prefixes and suffixes of the tokenized context
+    fill_idxs = [tmp.index("{}") for tmp in context_templates]
+    prefixes = [tmp[: fill_idxs[i]] for i, tmp in enumerate(context_templates)]
+    suffixes = [tmp[fill_idxs[i] + 2 :] for i, tmp in enumerate(context_templates)]
+
+    return prefixes, suffixes

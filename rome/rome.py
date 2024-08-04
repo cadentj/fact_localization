@@ -1,5 +1,3 @@
-from typing import Dict, Tuple, NamedTuple
-
 import torch
 from nnsight import LanguageModel
 from transformers import AutoTokenizer
@@ -7,23 +5,15 @@ from transformers import AutoTokenizer
 from .compute_u import compute_u
 from .utils import sample_k
 from .compute_v import compute_v
-from .configs import RomeRequest
+from .configs import RomeRequest, RomeConfig
 
 
 def execute_rome(
     model: LanguageModel,
     tok: AutoTokenizer,
-    req: RomeRequest = RomeRequest(),
-    # cfg: RomeConfig,
+    req: RomeRequest,
+    cfg: RomeConfig,
 ):
-
-    # Retrieve weights that user desires to change
-    # weights = {
-    #     f"{hparams.rewrite_module_tmp.format(layer)}.weight": nethook.get_parameter(
-    #         model, f"{hparams.rewrite_module_tmp.format(layer)}.weight"
-    #     )
-    #     for layer in hparams.layers
-    # }
 
     context_templates = sample_k(model, tok)
 
@@ -40,25 +30,19 @@ def execute_rome(
             model,
             tok,
             req,
+            cfg,
             left_vector,
             context_templates
         )
         print("Right vector shape:", right_vector.shape)
 
-        # with torch.no_grad():
-        #     # Determine correct transposition of delta matrix
-        #     weight_name = f"{hparams.rewrite_module_tmp.format(layer)}.weight"
-        #     upd_matrix = left_vector.unsqueeze(1) @ right_vector.unsqueeze(0)
-        #     upd_matrix = upd_matrix_match_shape(upd_matrix, weights[weight_name].shape)
+        with torch.no_grad():
+            # Determine correct transposition of delta matrix
+            module = model.transformer.h[req.layer].mlp.c_proj
+            upd_matrix = left_vector.unsqueeze(1) @ right_vector.unsqueeze(0)
+            upd_matrix = upd_matrix_match_shape(upd_matrix, module.weight.shape)
 
-        #     # Update model weights and record desired changes in `delta` variable
-        #     weights[weight_name][...] += upd_matrix
-        #     deltas[weight_name] = (
-        #         left_vector.detach(),
-        #         right_vector.detach(),
-        #     )
-
-    return right_vector
+    return upd_matrix
 
 def upd_matrix_match_shape(matrix: torch.Tensor, shape: torch.Size) -> torch.Tensor:
     """

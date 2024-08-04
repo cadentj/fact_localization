@@ -1,17 +1,20 @@
-# %%
 import os
+from typing import List
 
 import torch
+from transformers import AutoTokenizer
 import numpy as np
+from nnsight import LanguageModel
 from baukit.runningstats import CombinedStat, SecondMoment
 
-from .utils import get_words_idxs_in_templates
+from .utils import format_template
+from .configs import RomeRequest
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 INV_MOM2_CACHE = {}
 
 def get_inv_cov(
-    model,
+    model: LanguageModel,
     layer: int
 ):
     """
@@ -45,15 +48,16 @@ def get_inv_cov(
 
     return INV_MOM2_CACHE[key]
 
+
 def compute_u(
-    model,
-    tok,
-    req,
-    context_templates,
+    model: LanguageModel,
+    tok: AutoTokenizer,
+    req: RomeRequest,
+    context_templates: List[str],
 ):
     
     # Get the last subject token index for each template
-    prompts, indices = get_words_idxs_in_templates(
+    prompts, indices = format_template(
         tok=tok, 
         context_templates=[
             template.format(req.prompt) 
@@ -65,7 +69,8 @@ def compute_u(
     # Compute average k
     with model.trace(prompts):
 
-        k = model.transformer.h[req.layer].mlp.c_proj.input[0][0]
+        c_proj = model.transformer.h[req.layer].mlp.c_proj
+        k = c_proj.input[0][0]
 
         u = [
             k[i, indices[i],:] for i in range(len(prompts))
@@ -77,7 +82,7 @@ def compute_u(
     # Compute u
     u = get_inv_cov(
         model,
-        10,
+        req.layer,
     ) @ u.value.unsqueeze(1)
 
     u = u.squeeze()

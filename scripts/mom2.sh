@@ -1,0 +1,1 @@
+python3 localization/rome/compute_cov.py

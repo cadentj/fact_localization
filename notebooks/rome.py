@@ -2,8 +2,8 @@
 import torch
 from nnsight import LanguageModel
 
-from rome.rome import execute_rome
-from rome.configs import RomeRequest, RomeConfig
+from localization.rome.rome import execute_rome
+from localization.rome.configs import RomeRequest, RomeConfig
 
 model = LanguageModel("openai-community/gpt2-xl", device_map="auto", dispatch=True)
 tokenizer = model.tokenizer

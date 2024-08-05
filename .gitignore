@@ -1,3 +1,4 @@
-*counterfact.json
-
+*.json
+*.egg-info
 *.npz
+*__pycache__

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "localization"
+version = "0.1.0"
+description = "TBD"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "datasets",
+    "nnsight",
+    "simple_parsing",
+    "torchtyping"
+]
+
+[tool.pyright]
+include = ["localization*"]
+reportPrivateImportUsage = false
+
+[tool.setuptools.packages.find]
+include = ["localization*"]

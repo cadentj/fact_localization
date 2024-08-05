@@ -4,13 +4,14 @@ from dataclasses import dataclass
 from simple_parsing import Serializable
 
 class RomeRequest(NamedTuple):
-    layer: int = 17
+    layer: int
+    """MLP edit layer"""
 
-    subject: str = "Space Needle"
+    subject: str
 
-    prompt: str = "The {} is located in the city of"
+    prompt: str
 
-    target_new: str = "Rome"
+    target_new: str
 
     kl_prompt: str = "{} is a"
 

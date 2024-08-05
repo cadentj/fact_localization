@@ -5,20 +5,15 @@ from transformers import AutoTokenizer
 from nnsight import LanguageModel
 
 
-GENERATION = {
-    "do_sample" : True,
-    "top_k" : 5,
-    "max_new_tokens" : 10,
-}
-
-
 def sample_k(
     model: LanguageModel, 
-    tokenizer: AutoTokenizer
+    tokenizer: AutoTokenizer,
+    n_prompts: int,
+    **generation_kwargs
 ) -> List[str]:
     
-    batch = ['<|endoftext|>'] * 10
-    with model.generate(batch, **GENERATION):
+    batch = ['<|endoftext|>'] * n_prompts
+    with model.generate(batch, **generation_kwargs):
 
         results = model.generator.output.save()
 

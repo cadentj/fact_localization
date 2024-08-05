@@ -17,6 +17,7 @@ def compute_v(
     cfg: RomeConfig,
     left_vector: TensorType["d_fanout"],
     context_templates: List[str],
+    verbose: bool
 ):
     input_tok, target_ids, lookup_idxs = \
         _get_prompts(req, context_templates, tok)
@@ -32,7 +33,6 @@ def compute_v(
 
     # Optimizer
     opt = torch.optim.Adam([delta], lr=cfg.v_lr)
-
     model._model.eval()
 
     for _ in range(25):
@@ -52,6 +52,7 @@ def compute_v(
         kl_loss = _kl_loss(
             logits, lookup_idxs, kl_distr_init, kl_factor=cfg.kl_factor
         )
+
         nll_loss, nll_loss_each = _nll_loss(logits, rewriting_targets, target_ids)
 
         weight_decay = cfg.v_weight_decay * (
@@ -60,14 +61,14 @@ def compute_v(
 
         loss = nll_loss + kl_loss + weight_decay
 
-        print(
-            f"loss {np.round(loss.item(), 3)} = {np.round(nll_loss.item(), 3)} + {np.round(kl_loss.item(), 3)} + {np.round(weight_decay.item(), 3)} "
-            f"avg prob of [{req.target_new}] "
-            f"{torch.exp(-nll_loss_each).mean().item()}"
-        )
+        if verbose:
+            print(
+                f"loss {np.round(loss.item(), 3)} = {np.round(nll_loss.item(), 3)} + {np.round(kl_loss.item(), 3)} + {np.round(weight_decay.item(), 3)} "
+                f"avg prob of [{req.target_new}] "
+                f"{torch.exp(-nll_loss_each).mean().item()}"
+            )
 
-        if loss < 5e-2:
-            print("Loss is small, breaking")
+        if nll_loss + kl_loss < 5e-2:
             break
 
         # Backpropagate
@@ -85,14 +86,6 @@ def compute_v(
     cur_input, cur_output = _get_cur_io(model, req, tok)
 
     right_vector = (target - cur_output) / torch.dot(cur_input, left_vector)
-
-    # Print stats
-    print(f"Delta norm: {(target - cur_output).norm().item()}")
-    print(
-        f"Change in target norm: {target_init.norm().item()} to {target.norm().item()} => {(target.norm() - target_init.norm()).item()}"
-    )
-    print(f"Division Factor: {torch.dot(cur_input, left_vector).item()}")
-    print(f"Right vector norm: {right_vector.norm()}")
 
     return right_vector
 
@@ -178,19 +171,20 @@ def _get_prompts(req, context_templates, tok):
 def _get_rewriting_targets(
     rewriting_prompts: List[str], 
     input_tok: TensorType["batch", "seq"],
-    target_ids: TensorType["seq"]
+    target_ids: TensorType["seq"],
 ):
     """
     Create a target id mask over the batch's attention mask.
     """
-    # Create empty mask tensor
-    shape = (len(rewriting_prompts), *input_tok["input_ids"].shape[1:])
-    rewriting_targets = torch.full(shape, -100, device="cuda")
 
-    # Fill in rewriting target tokens
-    for i in range(len(rewriting_prompts)):
-        prompt_len = input_tok["attention_mask"][i].sum()
-        rewriting_targets[i, prompt_len - len(target_ids) : prompt_len] = target_ids
+    n = len(rewriting_prompts)
+
+    # Create empty mask tensor
+    rewriting_targets = torch.tensor(-100, device="cuda").repeat(
+        n, *input_tok["input_ids"].shape[1:]
+    )
+
+    rewriting_targets[torch.arange(n), - len(target_ids) : ] = target_ids
 
     return rewriting_targets
 

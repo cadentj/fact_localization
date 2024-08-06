@@ -31,7 +31,7 @@ def execute_rome(
             req,
             context_templates
         )
-        print("Left vector shape:", left_vector.shape)
+        print("Left vector shape:", left_vector.shape) if verbose else None
         right_vector: torch.Tensor = compute_v(
             model,
             tok,
@@ -41,12 +41,13 @@ def execute_rome(
             context_templates,
             verbose=verbose
         )
-        print("Right vector shape:", right_vector.shape)
+        print("Right vector shape:", right_vector.shape) if verbose else None
 
         with torch.no_grad():
             # Determine correct transposition of delta matrix
-            module = model.transformer.h[layer].mlp.c_proj
             upd_matrix = left_vector.unsqueeze(1) @ right_vector.unsqueeze(0)
+
+            module = model.transformer.h[layer].mlp.c_proj
             upd_matrix = upd_matrix_match_shape(upd_matrix, module.weight.shape)
 
     return upd_matrix
@@ -56,10 +57,9 @@ def _get_templates(model: LanguageModel, tok: AutoTokenizer):
     global TEMPLATE_CACHE
 
     if not TEMPLATE_CACHE:
+        print("Generating templates...")
         TEMPLATE_CACHE.extend(sample_k(model, tok, 10, max_new_tokens=10, **GENERATION))
         TEMPLATE_CACHE.extend(sample_k(model, tok, 10, max_new_tokens=5, **GENERATION))
-
-        print(TEMPLATE_CACHE)
 
     return TEMPLATE_CACHE
 

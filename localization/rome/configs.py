@@ -7,11 +7,15 @@ class RomeRequest(NamedTuple):
     layer: int
     """MLP edit layer"""
 
+    case_id: str
+
     subject: str
 
     prompt: str
 
     target_new: str
+
+    target_true: str
 
     kl_prompt: str = "{} is a"
 
@@ -25,6 +29,8 @@ class RomeConfig(Serializable):
     kl_factor: float = 0.0625
 
     clamp_norm_factor: int = 4
+
+    v_num_grad_steps: int = 40
 
 @dataclass
 class StatConfig(Serializable):

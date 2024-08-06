@@ -57,7 +57,7 @@ def compute_u(
 ):
     
     # Get the last subject token index for each template
-    prompts, indices = format_template(
+    input_tok, indices = format_template(
         tok=tok, 
         context_templates=[
             template.format(req.prompt) 
@@ -67,13 +67,13 @@ def compute_u(
     )
 
     # Compute average k
-    with model.trace(prompts):
+    with model.trace(input_tok):
 
         c_proj = model.transformer.h[req.layer].mlp.c_proj
         k = c_proj.input[0][0]
 
         u = [
-            k[i, indices[i],:] for i in range(len(prompts))
+            k[i, indices[i],:] for i in range(len(input_tok))
         ]
         u = torch.stack(u)
         u = u.mean(dim=0)

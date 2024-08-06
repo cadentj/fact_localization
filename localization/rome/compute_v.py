@@ -23,7 +23,7 @@ def compute_v(
         _get_prompts(req, context_templates, tok)
 
     rewriting_targets = \
-        _get_rewriting_targets(context_templates, input_tok, target_ids)
+        _get_rewriting_targets(context_templates, input_tok, target_ids, tok.padding_side)
 
     # Set up an optimization over a latent vector that, when output at the
     # rewrite layer, i.e. hypothesized fact lookup location, will induce the
@@ -35,7 +35,7 @@ def compute_v(
     opt = torch.optim.Adam([delta], lr=cfg.v_lr)
     model._model.eval()
 
-    for _ in range(25):
+    for _ in range(cfg.v_num_grad_steps):
         opt.zero_grad()
 
         with model.trace(input_tok["input_ids"]):
@@ -68,7 +68,7 @@ def compute_v(
                 f"{torch.exp(-nll_loss_each).mean().item()}"
             )
 
-        if nll_loss + kl_loss < 5e-2:
+        if loss < 5e-2:
             break
 
         # Backpropagate
@@ -87,6 +87,14 @@ def compute_v(
 
     right_vector = (target - cur_output) / torch.dot(cur_input, left_vector)
 
+    if verbose:
+        print(f"Delta norm: {(target - cur_output).norm().item()}")
+        print(
+            f"Change in target norm: {target_init.norm().item()} to {target.norm().item()} => {(target.norm() - target_init.norm()).item()}"
+        )
+        print(f"Division Factor: {torch.dot(cur_input, left_vector).item()}")
+        print(f"Right vector norm: {right_vector.norm()}")
+
     return right_vector
 
 
@@ -96,6 +104,7 @@ def _kl_loss(
     kl_distr_init, 
     kl_factor: float
 ) -> TensorType["kl_loss"]:
+    
     n_kl_prompts = 1
     kl_logits = torch.stack(
         [
@@ -157,13 +166,11 @@ def _get_prompts(req, context_templates, tok):
 
     # Compile prompts and lookup indices
     n = len(context_templates) + len(kl_prompts)
-    all_prompts, lookup_idxs = format_template(
+    input_tok, lookup_idxs = format_template(
         tok=tok,
         context_templates=rewriting_prompts + kl_prompts,
         words=[req.subject] * n,
     )
-
-    input_tok = tok(all_prompts, return_tensors="pt", padding=True)
 
     return input_tok, target_ids, lookup_idxs
 
@@ -172,6 +179,7 @@ def _get_rewriting_targets(
     rewriting_prompts: List[str], 
     input_tok: TensorType["batch", "seq"],
     target_ids: TensorType["seq"],
+    padding_side: str
 ):
     """
     Create a target id mask over the batch's attention mask.
@@ -184,7 +192,13 @@ def _get_rewriting_targets(
         n, *input_tok["input_ids"].shape[1:]
     )
 
-    rewriting_targets[torch.arange(n), - len(target_ids) : ] = target_ids
+    if padding_side == "left":
+        rewriting_targets[torch.arange(n), - len(target_ids) : ] = target_ids
+    
+    elif padding_side == "right":
+        for i in range(len(rewriting_prompts)):
+            ex_len = input_tok["attention_mask"][i].sum()
+            rewriting_targets[i, ex_len - len(target_ids) : ex_len] = target_ids
 
     return rewriting_targets
 
@@ -193,9 +207,9 @@ def _get_cur_io(model, req, tok):
     """
     Get the input/output acts at the requested layer's MLP projection.
     """
-    prompt, idx = format_template(tok, [req.prompt], [req.subject])
+    input_tok, idx = format_template(tok, [req.prompt], [req.subject])
 
-    with model.trace(prompt):
+    with model.trace(input_tok):
         mlp = model.transformer.h[req.layer].mlp.c_proj
 
         cur_input = mlp.input[0][0][0, idx].squeeze().save()

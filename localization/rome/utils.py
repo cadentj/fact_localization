@@ -26,8 +26,7 @@ def format_template(
     tok: AutoTokenizer, 
     context_templates: List[str], 
     words: str, 
-    subtoken: str = "last", 
-    padding_side: Literal["right", "left"] = "left"
+    subtoken: Literal["last", "all"] = "last", 
 ) -> int:
     """
     Given list of template strings, each with *one* format specifier
@@ -39,7 +38,7 @@ def format_template(
         tmp.count("{}") == 1 for tmp in context_templates
     ), "Multiple fill-ins not supported."
 
-    assert subtoken == "last", "Only last token retrieval supported."
+    # assert subtoken == "last", "Only last token retrieval supported."
 
     # Compute prefixes and suffixes of the tokenized context
     prefixes, suffixes = _split_templates(context_templates)
@@ -50,31 +49,50 @@ def format_template(
         _get_split_lengths(tok, prefixes, _words, suffixes)
     
     # Format the prompts bc why not
-    prompts = [
-        template.format(word)
-        for template, word in zip(context_templates, words)
-    ]
+    input_tok = tok(
+        [
+            template.format(word)
+            for template, word in zip(context_templates, words)
+        ],
+        return_tensors="pt",
+        padding=True
+    )
+
+    size = input_tok['input_ids'].size(1)
+    padding_side = tok.padding_side
+
+
+    if subtoken == "all":
+
+        word_idxs = [
+            [
+                prefixes_len[i] + _word_len
+                for _word_len in range(words_len[i])
+            ]
+            for i in range(len(prefixes))
+        ]
+
+        return input_tok, word_idxs
 
     # Compute indices of last tokens
-    if padding_side == "right":
+    elif padding_side == "right":
 
         word_idxs = [
             prefixes_len[i] + words_len[i] - 1
             for i in range(len(prefixes))
         ]
 
-        return prompts, word_idxs
+        return input_tok, word_idxs
     
     elif padding_side == "left":
 
         word_idxs = [
-            -(suffixes_len[i] + 1)
+            size - suffixes_len[i] - 1
             for i in range(len(prefixes))
         ]
 
-        return prompts, word_idxs
+        return input_tok, word_idxs
     
-
 def _get_split_lengths(tok, prefixes, words, suffixes):
     # Pre-process tokens to account for different 
     # tokenization strategies
@@ -90,6 +108,7 @@ def _get_split_lengths(tok, prefixes, words, suffixes):
     assert len(prefixes) == len(words) == len(suffixes)
     n = len(prefixes)
     batch_tok = tok([*prefixes, *words, *suffixes])
+
     prefixes_tok, words_tok, suffixes_tok = [
         batch_tok[i : i + n] for i in range(0, n * 3, n)
     ]

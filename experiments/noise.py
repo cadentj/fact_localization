@@ -1,35 +1,44 @@
 # %%
 
+import json
+
 from nnsight import LanguageModel
-from transformer_lens.utils import tokenize_and_concatenate
-from baukit.runningstats import Variance
 from tqdm import tqdm
 import torch
-from datasets import load_dataset
+
+def filter_reqs(cf, results):
+    ids = set([int(req) for req in results])
+    return [
+        req for req in cf if int(req['case_id']) in ids
+    ]
 
 model = LanguageModel("openai-community/gpt2-xl", device_map="auto", dispatch=True)
 tokenizer = model.tokenizer
 tokenizer.padding_side = "right"
 
+results_path = "../results/6.json"
+cf_path = "../localization/data/counterfact/counterfact.json"
 
-dataset = load_dataset("kh4dien/fineweb-100m-sample", split="train[:1%]")
-dataset = tokenize_and_concatenate(dataset, tokenizer, max_length=64)
+with open(results_path, "r") as f:
+    results = json.load(f)
 
-stat = Variance()
+with open(cf_path, "r") as f:
+    cf = json.load(f)
 
-for p in tqdm(dataset[:1000]['tokens'], total=1000):
+reqs = filter_reqs(cf, results)
+
+embeddings = []
+
+for r in tqdm(reqs, total=len(reqs)):
+
+    prompt = r['requested_rewrite']['subject']
 
     with torch.no_grad():
-        with model.trace(p):
+        with model.trace(prompt):
             embed = model.transformer.wte.output
-            embed = embed.view(-1, embed.size(-1)).save()
+            embed = embed[0].cpu().save()
 
-    stat.add(embed.value)
+    embeddings.append(embed)
 
-stdev = stat.stdev()
-
-noise = torch.randn_like(stdev) * (3 * stdev)
-
-# %%
-
-torch.save(noise.cpu(), "noise.pt")
+stdev = torch.cat(embeddings).std().item()
+stdev

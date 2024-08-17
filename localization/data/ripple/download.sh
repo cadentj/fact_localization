@@ -1,0 +1,1 @@
+wget https://raw.githubusercontent.com/edenbiran/RippleEdits/main/data/benchmark/popular.json

@@ -13,18 +13,11 @@ class SubjectDataset(Dataset):
         prompts: List[str],
         subjects: List[str],
         targets: List[str],
-        tok: AutoTokenizer
     ):
         assert len(prompts) == len(subjects) == len(targets)
-        prompts, idxs = format_template(
-            tok,
-            context_templates=prompts,
-            words=subjects,
-            padding_side="left"
-        )
 
         self.prompts = prompts
-        self.idxs = idxs
+        self.subjects = subjects
         self.targets = targets
 
     def __len__(self):
@@ -32,20 +25,19 @@ class SubjectDataset(Dataset):
 
     def __getitem__(self, idx: int):
         
-        return {
-            "prompt": self.prompts[idx],
-            "idx": self.idxs[idx],
+        return {    
+            "prompt" : self.prompts[idx],
+            "subject": self.subjects[idx],
             "target": self.targets[idx]
         }
     
 def collate_fn(batch, tok):
     
-    prompt = tok(
-        [
-            s['prompt'] for s in batch
-        ],
-        return_tensors="pt",
-        padding=True,
+    prompts, idxs = format_template(
+        tok,
+        [s['prompt'] for s in batch],
+        [s['subject'] for s in batch],
+        subtoken="last"
     )
 
     target = [
@@ -53,10 +45,10 @@ def collate_fn(batch, tok):
         for s in batch
     ]
 
-    idx = torch.tensor([s['idx'] for s in batch], dtype=torch.long)
+    idx = torch.tensor(idxs, dtype=torch.long)
 
     return {
-        **prompt,
+        **prompts,
         "target": target,
         "idx": idx
     }

@@ -107,31 +107,25 @@ def main(model, tokenizer, layer, n_reqs, logger):
             model.transformer.h[req.layer].mlp.c_proj.weight -= update
 
             rewrite_score = (p_new - p_init) / (1 - p_init)
-            print(rewrite_score)
-            # logger.info(f"Case ID: {req.case_id} | Prompt: {req.prompt.format(req.subject)} | Score: {rewrite_score}")
+            logger.info(f"Case ID: {req.case_id} | Prompt: {req.prompt.format(req.subject)} | Score: {rewrite_score}")
     
-    # with open(f"{layer}.json", "w") as f:
-    #     json.dump(deltas, f, indent=4)
+    with open(f"{layer}.json", "w") as f:
+        json.dump(deltas, f, indent=4)
     
 
-model = LanguageModel("openai-community/gpt2-xl", device_map="auto", dispatch=True)
-tokenizer = model.tokenizer
-tokenizer.padding_side = "right"
+if __name__ == "__main__":
 
-main(model, tokenizer, 0, 1, None)
-# if __name__ == "__main__":
+    parser = ArgumentParser()
+    parser.add_argument("--layer", type=int)
+    parser.add_argument("--n_reqs", type=int)
+    args = parser.parse_args()
 
-#     parser = ArgumentParser()
-#     parser.add_argument("--layer", type=int)
-#     parser.add_argument("--n_reqs", type=int)
-#     args = parser.parse_args()
+    model = LanguageModel("openai-community/gpt2-xl", device_map="auto", dispatch=True)
+    tokenizer = model.tokenizer
+    tokenizer.padding_side = "right"
 
-#     model = LanguageModel("openai-community/gpt2-xl", device_map="auto", dispatch=True)
-#     tokenizer = model.tokenizer
-#     tokenizer.padding_side = "right"
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    # logging.basicConfig(filename=f"rewrite_score_{args.layer}.log", filemode='w', format='%(name)s - %(levelname)s - %(message)s')
 
-#     logger = logging.getLogger()
-#     logger.setLevel(logging.INFO)
-#     # logging.basicConfig(filename=f"rewrite_score_{args.layer}.log", filemode='w', format='%(name)s - %(levelname)s - %(message)s')
-
-#     main(model, tokenizer, 0, args.n_reqs, logger)
+    main(model, tokenizer, 0, args.n_reqs, logger)

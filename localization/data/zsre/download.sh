@@ -1,0 +1,1 @@
+wget https://rome.baulab.info/data/dsets/zsre_mend_train.json
